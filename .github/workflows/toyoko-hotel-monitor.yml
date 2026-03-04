@@ -1,192 +1,129 @@
-name: Toyoko hotel monitor (room selectable)
+name: Toyoko Hotel Monitor
 
 on:
   schedule:
-    - cron: "0 * * * *" # 매시간 00분(UTC 기준)
-  workflow_dispatch: {}
+    - cron: "0 * * * *"
+  workflow_dispatch:
 
 permissions:
   issues: write
   contents: read
 
 jobs:
+
   monitor:
+
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
+    - name: Checkout
+      uses: actions/checkout@v4
 
-      - name: Install deps (Playwright + Chromium)
-        run: |
-          python -m pip install --upgrade pip
-          pip install playwright
-          playwright install --with-deps chromium
+    - name: Setup Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.11"
 
-      - name: Run checker
-        id: mon
-        run: |
-          OUT=$(python hotel_check_toyoko.py)
-          echo "$OUT"
-          echo "json=$OUT" >> $GITHUB_OUTPUT
+    - name: Install Playwright
+      run: |
+        python -m pip install --upgrade pip
+        pip install playwright
+        playwright install --with-deps chromium
 
-      - name: Parse result
-        id: parse
-        run: |
-          python - << 'PY'
-          import json, os
-          data = json.loads(os.environ["RAW"])
+    - name: Run Monitor
+      id: monitor
+      run: |
+        OUT=$(python hotel_check_toyoko.py)
+        echo "$OUT"
+        echo "json=$OUT" >> $GITHUB_OUTPUT
 
-          ok = bool(data.get("ok", False))
-          found = bool(data.get("found", False))
-          match_count = data.get("match_count", 0)
-          url = data.get("url", "")
-          checked_at = data.get("checked_at", "")
-          note = data.get("note", "")
+    - name: Parse Result
+      id: parse
+      run: |
+        python - << 'PY'
+        import json,os
 
-          def out(k,v):
-              with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as f:
-                  f.write(f"{k}={v}\n")
+        data=json.loads(os.environ["RAW"])
 
-          out("ok", "true" if ok else "false")
-          out("found", "true" if found else "false")
-          out("match_count", str(match_count))
-          out("url", url)
-          out("checked_at", checked_at)
-          out("note", note.replace("\n"," "))
-          PY
-        env:
-          RAW: ${{ steps.mon.outputs.json }}
+        ok=data["ok"]
+        found=data["found"]
+        count=data["count"]
+        url=data["url"]
+        time=data["checked_at"]
 
-      # (A) found=true일 때: 이미 알림(이슈)이 열려있으면 이메일 중복 발송 방지
-      - name: Check existing alert issue
-        if: ${{ steps.parse.outputs.ok == 'true' && steps.parse.outputs.found == 'true' }}
-        id: issuecheck
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const title = "Toyoko 객실 선택 버튼 감지";
-            const { data: issues } = await github.rest.issues.listForRepo({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              state: "open",
-              per_page: 100
-            });
-            const existing = issues.find(i => i.title === title);
-            core.setOutput("exists", existing ? "true" : "false");
-            core.setOutput("number", existing ? String(existing.number) : "");
+        def out(k,v):
+            with open(os.environ["GITHUB_OUTPUT"],"a") as f:
+                f.write(f"{k}={v}\n")
 
-      # (B) 이슈가 없으면: 이메일 발송 + 이슈 생성(상태 저장)
-      - name: Send email (first time only)
-        if: ${{ steps.parse.outputs.ok == 'true' && steps.parse.outputs.found == 'true' && steps.issuecheck.outputs.exists != 'true' }}
-        env:
-          SMTP_HOST: ${{ secrets.SMTP_HOST }}
-          SMTP_PORT: ${{ secrets.SMTP_PORT }}
-          SMTP_USER: ${{ secrets.SMTP_USER }}
-          SMTP_PASS: ${{ secrets.SMTP_PASS }}
-          MAIL_TO: ${{ secrets.MAIL_TO }}
-          MAIL_FROM: ${{ secrets.MAIL_FROM }}
-          URL: ${{ steps.parse.outputs.url }}
-          CHECKED_AT: ${{ steps.parse.outputs.checked_at }}
-          MATCH_COUNT: ${{ steps.parse.outputs.match_count }}
-        run: |
-          python - << 'PY'
-          import os, smtplib
-          from email.mime.text import MIMEText
+        out("ok",str(ok).lower())
+        out("found",str(found).lower())
+        out("count",count)
+        out("url",url)
+        out("time",time)
+        PY
+      env:
+        RAW: ${{ steps.monitor.outputs.json }}
 
-          host = os.environ["SMTP_HOST"]
-          port = int(os.environ.get("SMTP_PORT","587"))
-          user = os.environ["SMTP_USER"]
-          pw   = os.environ["SMTP_PASS"]
-          to_  = os.environ["MAIL_TO"]
-          from_= os.environ.get("MAIL_FROM") or user
+    - name: Create Issue if room available
+      if: ${{ steps.parse.outputs.ok == 'true' && steps.parse.outputs.found == 'true' }}
+      uses: actions/github-script@v7
+      with:
+        script: |
 
-          url = os.environ["URL"]
-          checked_at = os.environ["CHECKED_AT"]
-          match_count = os.environ["MATCH_COUNT"]
+          const title = "Toyoko 호텔 공실 발견"
 
-          subject = "[호텔 알림] '객실 선택' 버튼 감지"
-          body = f"""토요코인 예약 페이지에서 '객실 선택' 버튼이 감지되었다.
+          const { data: issues } = await github.rest.issues.listForRepo({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            state: "open"
+          })
 
-- 감지시각: {checked_at}
-- 매칭 개수: {match_count}
-- 링크: {url}
-"""
+          const exist = issues.find(i => i.title === title)
 
-          msg = MIMEText(body, _charset="utf-8")
-          msg["Subject"] = subject
-          msg["From"] = from_
-          msg["To"] = to_
+          if (!exist){
 
-          with smtplib.SMTP(host, port, timeout=30) as s:
-            s.ehlo()
-            try:
-              s.starttls()
-              s.ehlo()
-            except Exception:
-              pass
-            s.login(user, pw)
-            s.sendmail(from_, [to_], msg.as_string())
-          print("Email sent.")
-          PY
+            const body = `
+Toyoko Inn 예약 가능 객실 발견
 
-      - name: Create alert issue (state)
-        if: ${{ steps.parse.outputs.ok == 'true' && steps.parse.outputs.found == 'true' && steps.issuecheck.outputs.exists != 'true' }}
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const title = "Toyoko 객실 선택 버튼 감지";
-            const url = "${{ steps.parse.outputs.url }}";
-            const checkedAt = "${{ steps.parse.outputs.checked_at }}";
-            const matchCount = "${{ steps.parse.outputs.match_count }}";
-            const note = "${{ steps.parse.outputs.note }}";
+확인시간: ${{ steps.parse.outputs.time }}
 
-            const body = [
-              `'객실 선택' 버튼이 감지되었다.`,
-              `감지시각: ${checkedAt}`,
-              `매칭 개수: ${matchCount}`,
-              `링크: ${url}`,
-              `비고: ${note}`
-            ].join("\n");
+페이지:
+${{ steps.parse.outputs.url }}
+
+객실 선택 버튼 발견
+`
 
             await github.rest.issues.create({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              title,
-              body
-            });
+              title: title,
+              body: body
+            })
+          }
 
-      # (C) found=false이면: 열려있는 알림 이슈를 닫아 다음에 다시 감지되면 재알림 가능하게 함
-      - name: Close alert issue when not found
-        if: ${{ steps.parse.outputs.ok == 'true' && steps.parse.outputs.found == 'false' }}
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const title = "Toyoko 객실 선택 버튼 감지";
-            const { data: issues } = await github.rest.issues.listForRepo({
+    - name: Close issue if sold out
+      if: ${{ steps.parse.outputs.ok == 'true' && steps.parse.outputs.found == 'false' }}
+      uses: actions/github-script@v7
+      with:
+        script: |
+
+          const title="Toyoko 호텔 공실 발견"
+
+          const { data: issues } = await github.rest.issues.listForRepo({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            state: "open"
+          })
+
+          const exist = issues.find(i => i.title === title)
+
+          if (exist){
+
+            await github.rest.issues.update({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              state: "open",
-              per_page: 100
-            });
-            const existing = issues.find(i => i.title === title);
-            if (existing) {
-              await github.rest.issues.update({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: existing.number,
-                state: "closed"
-              });
-            }
-
-      # (D) 진짜 오류(ok=false)면 워크플로우 실패 처리(차단/접속오류 추적용)
-      - name: Fail loudly if real error occurs
-        if: ${{ steps.parse.outputs.ok == 'false' }}
-        run: |
-          echo "Checker failed: ${{ steps.parse.outputs.note }}"
-          exit 1
+              issue_number: exist.number,
+              state: "closed"
+            })
+          }
