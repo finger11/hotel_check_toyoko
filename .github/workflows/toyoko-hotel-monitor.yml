@@ -1,4 +1,4 @@
-name: Toyoko Hotel Monitor v1
+name: Toyoko Hotel Monitor
 
 on:
   schedule:
@@ -17,113 +17,84 @@ jobs:
 
     steps:
 
-    - name: Checkout
-      uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
-    - name: Setup Python
-      uses: actions/setup-python@v5
-      with:
-        python-version: "3.11"
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
 
-    - name: Install Playwright
-      run: |
-        python -m pip install --upgrade pip
-        pip install playwright
-        playwright install --with-deps chromium
+      - name: Install Playwright
+        run: |
+          python -m pip install --upgrade pip
+          pip install playwright
+          playwright install --with-deps chromium
 
-    - name: Run Monitor
-      id: monitor
-      run: |
-        OUT=$(python hotel_check_toyoko.py)
-        echo "$OUT"
-        echo "json=$OUT" >> $GITHUB_OUTPUT
+      - name: Run checker
+        id: checker
+        run: |
+          OUT=$(python hotel_check_toyoko.py)
+          echo "$OUT"
+          echo "json=$OUT" >> $GITHUB_OUTPUT
 
-    - name: Parse Result
-      id: parse
-      run: |
-        python - << 'PY'
-        import json,os
+      - name: Parse result
+        id: parse
+        run: |
+          python - << 'EOF'
+          import json,os
 
-        data=json.loads(os.environ["RAW"])
+          data=json.loads(os.environ["RAW"])
 
-        ok=data["ok"]
-        found=data["found"]
-        count=data["count"]
-        url=data["url"]
-        time=data["checked_at"]
+          ok=data["ok"]
+          found=data["found"]
+          count=data["count"]
+          url=data["url"]
+          time=data["checked_at"]
 
-        def out(k,v):
-            with open(os.environ["GITHUB_OUTPUT"],"a") as f:
-                f.write(f"{k}={v}\n")
+          def out(k,v):
+              with open(os.environ["GITHUB_OUTPUT"],"a") as f:
+                  f.write(f"{k}={v}\n")
 
-        out("ok",str(ok).lower())
-        out("found",str(found).lower())
-        out("count",count)
-        out("url",url)
-        out("time",time)
-        PY
-      env:
-        RAW: ${{ steps.monitor.outputs.json }}
+          out("ok",str(ok).lower())
+          out("found",str(found).lower())
+          out("count",count)
+          out("url",url)
+          out("time",time)
+          EOF
+        env:
+          RAW: ${{ steps.checker.outputs.json }}
 
-    - name: Create Issue if room available
-      if: ${{ steps.parse.outputs.ok == 'true' && steps.parse.outputs.found == 'true' }}
-      uses: actions/github-script@v7
-      with:
-        script: |
+      - name: Create issue if room available
+        if: ${{ steps.parse.outputs.ok == 'true' && steps.parse.outputs.found == 'true' }}
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const title="Toyoko 호텔 공실 발견"
 
-          const title = "Toyoko 호텔 공실 발견"
+            const {data:issues}=await github.rest.issues.listForRepo({
+              owner:context.repo.owner,
+              repo:context.repo.repo,
+              state:"open"
+            })
 
-          const { data: issues } = await github.rest.issues.listForRepo({
-            owner: context.repo.owner,
-            repo: context.repo.repo,
-            state: "open"
-          })
+            const exist=issues.find(i=>i.title===title)
 
-          const exist = issues.find(i => i.title === title)
+            if(!exist){
 
-          if (!exist){
-
-            const body = `
-Toyoko Inn 예약 가능 객실 발견
+              const body=`Toyoko 호텔 예약 가능 객실 발견
 
 확인시간: ${{ steps.parse.outputs.time }}
 
-페이지:
+링크:
 ${{ steps.parse.outputs.url }}
-
-객실 선택 버튼 발견
 `
 
-            await github.rest.issues.create({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              title: title,
-              body: body
-            })
-          }
+              await github.rest.issues.create({
+                owner:context.repo.owner,
+                repo:context.repo.repo,
+                title:title,
+                body:body
+              })
 
-    - name: Close issue if sold out
-      if: ${{ steps.parse.outputs.ok == 'true' && steps.parse.outputs.found == 'false' }}
-      uses: actions/github-script@v7
-      with:
-        script: |
-
-          const title="Toyoko 호텔 공실 발견"
-
-          const { data: issues } = await github.rest.issues.listForRepo({
-            owner: context.repo.owner,
-            repo: context.repo.repo,
-            state: "open"
-          })
-
-          const exist = issues.find(i => i.title === title)
-
-          if (exist){
-
-            await github.rest.issues.update({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: exist.number,
-              state: "closed"
-            })
-          }
+            }
