@@ -1,4 +1,4 @@
-name: Toyoko Hotel Monitor v1
+name: Toyoko Hotel Monitor
 
 on:
   schedule:
