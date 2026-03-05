@@ -3,7 +3,7 @@ import json
 from datetime import datetime, timezone
 from playwright.sync_api import sync_playwright, TimeoutError as PWTimeoutError
 
-URL = "https://www.toyoko-inn.com/korea/search/result/?prefecture=45&people=2&room=1&smoking=noSmoking&start=2026-05-13&end=2026-05-14"
+URL = "https://www.toyoko-inn.com/korea/search/result/?area=543&people=2&room=1&smoking=noSmoking&start=2026-05-01&end=2026-05-05"
 KEYWORD = "객실 선택"
 
 def main():
